@@ -26,28 +26,92 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Verificar proyecto
+      - name: Verificar estructura del proyecto
+        shell: bash
         run: |
           set -e
-          test -f settings.gradle
-          test -f build.gradle
-          test -f app/build.gradle
-          test -f app/src/main/AndroidManifest.xml
-          test -f app/src/main/assets/index.html
-          test -f app/src/main/java/com/matibatidos/pos/rc6/MainActivity.java
-          grep -q "applicationId 'com.matibatidos.pos.rc6'" app/build.gradle
-          test -f app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+
+          echo "===== RAIZ DEL PROYECTO ====="
+          ls -la
+
+          echo "===== VERIFICANDO ARCHIVOS ====="
+
+          check_file() {
+            if [ -f "$1" ]; then
+              echo "OK: $1"
+            else
+              echo "FALTA: $1"
+              return 1
+            fi
+          }
+
+          check_file settings.gradle
+          check_file build.gradle
+          check_file app/build.gradle
+          check_file app/src/main/AndroidManifest.xml
+          check_file app/src/main/assets/index.html
+
+          echo "===== BUSCANDO ACTIVIDAD ANDROID ====="
+
+          ACTIVITY=$(find app/src/main -type f \
+            \( -name "MainActivity.java" -o -name "MainActivity.kt" \) \
+            -print -quit)
+
+          if [ -z "$ACTIVITY" ]; then
+            echo "ERROR: No se encontró MainActivity."
+            find app/src/main -type f
+            exit 1
+          fi
+
+          echo "Actividad encontrada: $ACTIVITY"
+
+          echo "===== VERIFICANDO IDENTIFICADOR ====="
+
+          if grep -Eq "applicationId[[:space:]]*['\"]com\.matibatidos\.pos\.rc6['\"]" app/build.gradle; then
+            echo "OK: APK independiente."
+          else
+            echo "ERROR: El applicationId no es com.matibatidos.pos.rc6."
+            grep -n "applicationId" app/build.gradle || true
+            exit 1
+          fi
+
+          echo "===== BUSCANDO ICONOS ====="
+
+          ICON=$(find app/src/main/res \
+            -type f \
+            \( -name "*.png" -o -name "*.webp" -o -name "*.xml" \) \
+            \( -path "*/mipmap*/*" -o -path "*/drawable*/*" \) \
+            -print -quit)
+
+          if [ -z "$ICON" ]; then
+            echo "ERROR: No se encontraron recursos de icono."
+            exit 1
+          fi
+
+          echo "Recurso de icono encontrado: $ICON"
+          echo "Verificación terminada."
+
+      - name: Preparar Android SDK
+        uses: android-actions/setup-android@v3
 
       - name: Instalar componentes Android
         run: |
           set -e
-          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager -print -quit)"
+
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
+            -type f -name sdkmanager -print -quit)
+
           if [ -z "$SDKMANAGER" ]; then
-            echo "No se encontró sdkmanager"
+            echo "ERROR: No se encontró sdkmanager."
             exit 1
           fi
+
           yes | "$SDKMANAGER" --licenses >/dev/null || true
-          "$SDKMANAGER" --install "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+
+          "$SDKMANAGER" --install \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "platform-tools"
 
       - name: Configurar Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
@@ -55,17 +119,25 @@ jobs:
           gradle-version: '8.9'
 
       - name: Compilar APK
-        run: gradle --no-daemon clean assembleDebug
+        run: |
+          gradle --no-daemon clean assembleDebug
 
       - name: Verificar APK
         run: |
           set -e
+
           APK="app/build/outputs/apk/debug/app-debug.apk"
-          test -s "$APK"
+
+          if [ ! -s "$APK" ]; then
+            echo "ERROR: No se generó la APK."
+            exit 1
+          fi
+
+          echo "APK generada:"
           ls -lh "$APK"
           sha256sum "$APK"
 
-      - name: Publicar APK
+      - name: Publicar APK independiente
         uses: actions/upload-artifact@v4
         with:
           name: Matibatidos-POS-RC6-INDEPENDIENTE
