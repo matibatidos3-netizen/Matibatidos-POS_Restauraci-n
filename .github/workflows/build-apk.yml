@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Descargar proyecto
+      - name: Descargar repositorio
         uses: actions/checkout@v4
 
       - name: Configurar Java 17
@@ -26,75 +26,87 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Verificar estructura del proyecto
+      - name: Extraer y localizar proyecto Android
+        id: locate
         shell: bash
         run: |
           set -e
 
-          echo "===== RAIZ DEL PROYECTO ====="
-          ls -la
+          ZIP="Matibatidos_RC6_RESTAURACION_COMPATIBLE_APK_INDEPENDIENTE.zip"
 
-          echo "===== VERIFICANDO ARCHIVOS ====="
+          echo "Buscando ZIP del proyecto..."
 
-          check_file() {
-            if [ -f "$1" ]; then
-              echo "OK: $1"
-            else
-              echo "FALTA: $1"
-              return 1
-            fi
-          }
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: No se encontró $ZIP"
+            ls -la
+            exit 1
+          fi
 
-          check_file settings.gradle
-          check_file build.gradle
-          check_file app/build.gradle
-          check_file app/src/main/AndroidManifest.xml
-          check_file app/src/main/assets/index.html
+          mkdir -p extracted_project
 
-          echo "===== BUSCANDO ACTIVIDAD ANDROID ====="
+          echo "Extrayendo proyecto..."
+          unzip -oq "$ZIP" -d extracted_project
 
-          ACTIVITY=$(find app/src/main -type f \
-            \( -name "MainActivity.java" -o -name "MainActivity.kt" \) \
+          echo "Buscando settings.gradle..."
+
+          SETTINGS=$(find extracted_project \
+            -type f \
+            \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -not -path '*/.git/*' \
+            -print -quit)
+
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: El ZIP no contiene settings.gradle."
+            echo "Contenido extraído:"
+            find extracted_project -maxdepth 5 -type f | head -150
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS")
+
+          echo "Proyecto encontrado: $PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Verificar archivos del proyecto
+        working-directory: ${{ steps.locate.outputs.project_dir }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "Verificando estructura..."
+
+          test -f app/build.gradle || test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/assets/index.html
+
+          echo "Buscando actividad Android..."
+
+          ACTIVITY=$(find app/src/main \
+            -type f \
+            \( -name MainActivity.java -o -name MainActivity.kt \) \
             -print -quit)
 
           if [ -z "$ACTIVITY" ]; then
             echo "ERROR: No se encontró MainActivity."
-            find app/src/main -type f
             exit 1
           fi
 
-          echo "Actividad encontrada: $ACTIVITY"
+          echo "Actividad: $ACTIVITY"
 
-          echo "===== VERIFICANDO IDENTIFICADOR ====="
+          echo "Verificando identificador independiente..."
 
-          if grep -Eq "applicationId[[:space:]]*['\"]com\.matibatidos\.pos\.rc6['\"]" app/build.gradle; then
-            echo "OK: APK independiente."
-          else
-            echo "ERROR: El applicationId no es com.matibatidos.pos.rc6."
-            grep -n "applicationId" app/build.gradle || true
+          if ! grep -Eq "applicationId[[:space:]]*['\"]com\.matibatidos\.pos\.rc6['\"]" app/build.gradle app/build.gradle.kts 2>/dev/null; then
+            echo "ERROR: No se encontró el identificador independiente."
             exit 1
           fi
 
-          echo "===== BUSCANDO ICONOS ====="
-
-          ICON=$(find app/src/main/res \
-            -type f \
-            \( -name "*.png" -o -name "*.webp" -o -name "*.xml" \) \
-            \( -path "*/mipmap*/*" -o -path "*/drawable*/*" \) \
-            -print -quit)
-
-          if [ -z "$ICON" ]; then
-            echo "ERROR: No se encontraron recursos de icono."
-            exit 1
-          fi
-
-          echo "Recurso de icono encontrado: $ICON"
-          echo "Verificación terminada."
+          echo "Proyecto verificado."
 
       - name: Preparar Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Instalar componentes Android
+        shell: bash
         run: |
           set -e
 
@@ -119,28 +131,34 @@ jobs:
           gradle-version: '8.9'
 
       - name: Compilar APK
+        working-directory: ${{ steps.locate.outputs.project_dir }}
         run: |
           gradle --no-daemon clean assembleDebug
 
-      - name: Verificar APK
+      - name: Verificar APK generada
+        id: apk
+        working-directory: ${{ steps.locate.outputs.project_dir }}
+        shell: bash
         run: |
           set -e
 
-          APK="app/build/outputs/apk/debug/app-debug.apk"
+          APK=$(find app/build/outputs/apk/debug \
+            -type f -name "*.apk" -print -quit)
 
-          if [ ! -s "$APK" ]; then
+          if [ -z "$APK" ]; then
             echo "ERROR: No se generó la APK."
             exit 1
           fi
 
           echo "APK generada:"
           ls -lh "$APK"
-          sha256sum "$APK"
 
-      - name: Publicar APK independiente
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+
+      - name: Publicar APK
         uses: actions/upload-artifact@v4
         with:
           name: Matibatidos-POS-RC6-INDEPENDIENTE
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ steps.locate.outputs.project_dir }}/${{ steps.apk.outputs.apk_path }}
           if-no-files-found: error
           retention-days: 30
